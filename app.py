@@ -157,15 +157,15 @@ def comando(cmd):
         return "Magic packet enviado 🖥️"
     if cmd.startswith("/estado"):
         if jugando():
-            b = "jugando ahora (%s)" % boca["nombre"]
+            b = "Jugando ahora (%s)" % boca["nombre"]
         elif boca["ko"] and boca["ko"] > time.time():
             t = time.localtime(boca["ko"] + TZ)
             b = "%02d/%02d %02d:%02d, %s" % (t[2], t[1], t[3], t[4], boca["nombre"])
         else:
-            b = "sin próximo partido cargado"
+            b = "Sin próximo partido cargado"
         return "PC: %s\nHermes: %s\nBoca: %s" % (
-            "prendida ✅" if pc_on else "apagada",
-            "online ✅" if hermes_on else "caído ❌", b)
+            "Prendida ✅" if pc_on else "Apagada",
+            "Online ✅" if hermes_on else "Caído ❌", b)
     return None
 
 def tick():                       # main.py lo llama cada ~0,5 s
