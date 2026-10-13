@@ -32,7 +32,8 @@ SPORTSDB = "https://www.thesportsdb.com/api/v1/json/123/eventsnext.php?id=%d"
 
 hermes_on = None        # desconocido hasta el primer chequeo
 pc_on     = None
-boca = {"ko": None, "nombre": "", "ult": 0}
+boca = {"ko": None, "rival": "", "copa": "", "local": True, "ult": 0}
+DIAS = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
 t_h = t_pc = t_b = 0
 blink = 0
 _send = print
@@ -129,7 +130,29 @@ def proximo_partido():
     if ev:
         e = ev[0]
         ts = e.get("strTimestamp") or (e["dateEvent"] + "T" + e["strTime"])
-        boca.update(ko=a_segundos(ts), nombre=e.get("strEvent", ""))
+        local = str(e.get("idHomeTeam")) == str(BOCA_ID)
+        boca.update(ko=a_segundos(ts), local=local,
+                    rival=e.get("strAwayTeam" if local else "strHomeTeam") or "?",
+                    copa=e.get("strLeague") or "")
+
+def texto_boca():
+    if not boca["ko"]:
+        return "Sin próximo partido cargado"
+    linea = "vs %s (%s)" % (boca["rival"], "Local" if boca["local"] else "Visitante")
+    if jugando():
+        return "Jugando ahora %s\n%s" % (linea, boca["copa"])
+    if boca["ko"] <= time.time():
+        return "Sin próximo partido cargado"
+    t = time.localtime(boca["ko"] + TZ)
+    hoy = time.localtime(time.time() + TZ)
+    manana = time.localtime(time.time() + TZ + 86400)
+    if t[:3] == hoy[:3]:
+        dia = "Hoy"
+    elif t[:3] == manana[:3]:
+        dia = "Mañana"
+    else:
+        dia = "%s %02d/%02d" % (DIAS[t[6]], t[2], t[1])
+    return "%s\n%s · %s %02d:%02d" % (linea, boca["copa"], dia, t[3], t[4])
 
 def jugando():
     ko = boca["ko"]
@@ -156,13 +179,7 @@ def comando(cmd):
         wol()
         return "Magic packet enviado 🖥️"
     if cmd.startswith("/estado"):
-        if jugando():
-            b = "Jugando ahora (%s)" % boca["nombre"]
-        elif boca["ko"] and boca["ko"] > time.time():
-            t = time.localtime(boca["ko"] + TZ)
-            b = "%02d/%02d %02d:%02d, %s" % (t[2], t[1], t[3], t[4], boca["nombre"])
-        else:
-            b = "Sin próximo partido cargado"
+        b = texto_boca()
         return "PC: %s\nHermes: %s\nBoca: %s" % (
             "Prendida ✅" if pc_on else "Apagada",
             "Online ✅" if hermes_on else "Caído ❌", b)
