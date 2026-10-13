@@ -1,7 +1,7 @@
 # app.py - tu lógica. Este es el archivo que editás en GitHub y actualizás con /update.
 # NO pongas claves acá: se leen de config.py, que queda solo en la Pico.
 #
-# - /pc: Wake-on-LAN a la PC
+# - /pc: Wake-on-LAN a la PC  |  /apagar y /cancelar: apagado vía apagar.ps1
 # - LED: apagado si Hermes está caído, fijo si está online,
 #        titila si Hermes está online y juega Boca
 # - Telegram avisa solo cuando Hermes se cae o la PC se prende
@@ -17,6 +17,7 @@ except ImportError:
 # ===== ajustes (se pueden cambiar desde GitHub) =====
 HERMES_URL  = "https://mihermes.duckdns.org"
 PC_PUERTO   = 445       # puerto que Windows tenga abierto (445 o 3389)
+APAGAR_PUERTO = 9999    # donde escucha apagar.ps1 en la PC
 BOCA_ID     = 135156    # Boca Juniors en TheSportsDB (verificado)
 PARTIDO_MIN = 120       # minutos que titila desde el arranque del partido
 TZ          = -3 * 3600
@@ -84,6 +85,17 @@ def wol():
     for _ in range(3):
         s.sendto(pkt, (broadcast(), 9))
     s.close()
+
+def mandar_pc(orden):
+    # manda APAGAR o CANCELAR al listener de la PC, firmado con la clave de config.py
+    clave = getattr(C, "APAGAR_CLAVE", "")
+    if not clave:
+        return False
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.sendto(("%s:%s" % (orden, clave)).encode(),
+             socket.getaddrinfo(C.PC_IP, APAGAR_PUERTO)[0][-1])
+    s.close()
+    return True
 
 def chequear_pc():
     # prendida si su IP contesta en el puerto (aunque sea rechazando)
@@ -175,6 +187,16 @@ def setup(send):
     _send = send
 
 def comando(cmd):
+    if cmd.startswith("/apagar"):
+        if pc_on is False:
+            return "La PC ya está apagada"
+        if not mandar_pc("APAGAR"):
+            return "Falta APAGAR_CLAVE en config.py"
+        return "Apagando la PC en 60 segundos. Mandá /cancelar para frenarlo"
+    if cmd.startswith("/cancelar"):
+        if not mandar_pc("CANCELAR"):
+            return "Falta APAGAR_CLAVE en config.py"
+        return "Apagado cancelado"
     if cmd.startswith("/pc"):
         wol()
         return "Magic packet enviado 🖥️"
