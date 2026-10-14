@@ -10,4 +10,4 @@ Automatizaciones de casa con Raspberry Pi Pico W, controladas por Telegram.
 - `app.py`: la lógica. Es lo único que vive en este repo; se actualiza en la Pico con `/update`.
 - `main.py` y `config.py`: van solo en la Pico. `config.py` tiene las claves y nunca se sube.
 
-Comandos: `/pc` `/estado` `/update` `/rollback` `/reset` `/ayuda`
+Comandos: `/pc` `/estado` `/log` `/update` `/rollback` `/reset` `/ayuda`

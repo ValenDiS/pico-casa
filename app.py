@@ -15,7 +15,8 @@ except ImportError:
     import urequests as requests
 
 # ===== ajustes (se pueden cambiar desde GitHub) =====
-HERMES_URL  = "https://mihermes.duckdns.org"
+HERMES_URL  = "https://mihermes.duckdns.org/api/yo"   # sin sesión responde {"usuario":null} al instante
+HERMES_TIMEOUT = 10     # seg de espera antes de darlo por caído
 PC_PUERTO   = 445       # puerto que Windows tenga abierto (445 o 3389)
 BOCA_ID     = 135156    # Boca Juniors en TheSportsDB (verificado)
 PARTIDO_MIN = 120       # minutos que titila desde el arranque del partido
@@ -103,19 +104,40 @@ def chequear_pc():
 
 
 # ---------- Hermes ----------
+registro = []           # últimos eventos de Hermes, solo en RAM (se pierde al reiniciar)
+
+def anotar(txt):
+    t = time.localtime(time.time() + TZ)
+    registro.append("%02d/%02d %02d:%02d:%02d %s" % (t[2], t[1], t[3], t[4], t[5], txt))
+    if len(registro) > 20:
+        registro.pop(0)
+
 def chequear_hermes():
+    # ok solo si /api/yo responde 200 con JSON que tenga "usuario":
+    # un 502 de Caddy con el backend caído cuenta como caída
     global hermes_on
+    detalle = ""
     try:
-        r = requests.head(HERMES_URL)
-        ok = r.status_code < 500
-        r.close()
-    except NotImplementedError:   # redirección: el server respondió
-        ok = True
-    except Exception:
-        ok = False
+        try:
+            r = requests.get(HERMES_URL, timeout=HERMES_TIMEOUT)
+        except TypeError:                         # requests sin timeout
+            r = requests.get(HERMES_URL)
+        try:
+            ok = r.status_code == 200 and "usuario" in r.json()
+            if not ok:
+                detalle = "HTTP %d" % r.status_code
+        except Exception:
+            ok, detalle = False, "HTTP %d, no es JSON" % r.status_code
+        finally:
+            r.close()
+    except Exception as e:
+        ok, detalle = False, repr(e)
     gc.collect()
     if not ok and hermes_on is not False:         # solo avisa cuando se cae
+        anotar("caído (%s)" % detalle)
         _send("Hermes se cayó ❌")
+    elif ok and hermes_on is False:
+        anotar("volvió")
     hermes_on = ok
 
 
@@ -178,6 +200,8 @@ def comando(cmd):
     if cmd.startswith("/pc"):
         wol()
         return "Magic packet enviado 🖥️"
+    if cmd.startswith("/log"):
+        return "Caídas de Hermes:\n" + ("\n".join(registro) or "Ninguna desde el último reinicio")
     if cmd.startswith("/estado"):
         b = texto_boca()
         return "PC: %s\nHermes: %s\nBoca: %s" % (
