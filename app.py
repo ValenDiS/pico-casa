@@ -16,7 +16,7 @@ except ImportError:
 
 # ===== ajustes (se pueden cambiar desde GitHub) =====
 HERMES_URL  = "https://mihermes.duckdns.org/api/yo"   # sin sesión responde {"usuario":null} al instante
-HERMES_TIMEOUT = 10     # seg de espera antes de darlo por caído
+HERMES_TIMEOUT = 6      # seg de espera antes de darlo por caído (menos que el watchdog de 8 s)
 PC_PUERTO   = 445       # puerto que Windows tenga abierto (445 o 3389)
 BOCA_ID     = 135156    # Boca Juniors en TheSportsDB (verificado)
 PARTIDO_MIN = 120       # minutos que titila desde el arranque del partido
@@ -24,6 +24,7 @@ TZ          = -3 * 3600
 
 HERMES_CADA = 60        # seg entre chequeos de Hermes
 PC_CADA     = 15        # seg entre chequeos de la PC
+PC_FALLOS   = 4         # chequeos seguidos sin respuesta para darla por apagada (~1 min)
 BOCA_CADA   = 3600      # seg entre consultas del próximo partido
 # ====================================================
 
@@ -33,16 +34,24 @@ SPORTSDB = "https://www.thesportsdb.com/api/v1/json/123/eventsnext.php?id=%d"
 
 hermes_on = None        # desconocido hasta el primer chequeo
 pc_on     = None
+pc_fallos = 0
 boca = {"ko": None, "rival": "", "copa": "", "local": True, "ult": 0}
 DIAS = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
 t_h = t_pc = t_b = 0
 blink = 0
 _send = print
 
+def alimentar():          # main.py lo reemplaza por el feed del watchdog
+    pass
+
 
 # ---------- utilidades ----------
 def get_json(url, headers=None):
-    r = requests.get(url, headers=headers or {})
+    alimentar()
+    try:
+        r = requests.get(url, headers=headers or {}, timeout=HERMES_TIMEOUT)
+    except TypeError:
+        r = requests.get(url, headers=headers or {})
     try:
         return r.json()
     finally:
@@ -88,7 +97,8 @@ def wol():
 
 def chequear_pc():
     # prendida si su IP contesta en el puerto (aunque sea rechazando)
-    global pc_on
+    global pc_on, pc_fallos
+    alimentar()
     s = socket.socket()
     s.settimeout(1)
     try:
@@ -98,9 +108,16 @@ def chequear_pc():
         ok = bool(e.args) and e.args[0] == 111    # ECONNREFUSED: respondió
     finally:
         s.close()
-    if ok and pc_on is False:                     # solo avisa cuando se prende
-        _send("PC prendida 🖥️✅")
-    pc_on = ok
+    if ok:
+        if pc_on is False:                        # solo avisa cuando se prende
+            _send("PC prendida 🖥️✅")
+        pc_on, pc_fallos = True, 0
+    else:
+        # un chequeo fallido suelto no alcanza: así no avisa de nuevo
+        # cada vez que la PC tarda en contestar
+        pc_fallos += 1
+        if pc_fallos >= PC_FALLOS or pc_on is None:
+            pc_on = False
 
 
 # ---------- Hermes ----------
@@ -118,6 +135,7 @@ def chequear_hermes():
     global hermes_on
     detalle = ""
     try:
+        alimentar()
         try:
             r = requests.get(HERMES_URL, timeout=HERMES_TIMEOUT)
         except TypeError:                         # requests sin timeout
