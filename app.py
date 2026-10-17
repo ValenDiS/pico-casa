@@ -371,7 +371,7 @@ def detalle_boca():
     else:
         cab = "%s\nvs %s%s · %s\n%s\n%s" % (
             "JUGANDO AHORA" if jugando() else "Próximo partido",
-            boca["rival"], " (%s)" % boca["pais"] if boca["pais"] else "",
+            boca["rival"], " (%s)" % boca["pais"] if boca["pais"] not in ("", "Argentina") else "",
             "Local" if boca["local"] else "Visitante", competencia(), cuando())
         if boca["estadio"]:
             cab += "\n" + boca["estadio"]
