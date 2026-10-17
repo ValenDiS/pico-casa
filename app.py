@@ -38,7 +38,7 @@ ESPN_BYTES = 20000      # alcanza para los 2 primeros partidos (la respuesta ent
 TABLA = "https://site.api.espn.com/apis/v2/sports/soccer/arg.1/standings?seasontype=%d"
 TORNEOS = (1, 6)
 RESULTADOS = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/teams/%s/schedule"
-RES_BYTES = 36000       # últimos ~4 partidos jugados (del más nuevo al más viejo)
+RES_PARTIDOS = 6        # partidos jugados que se revisan buscando la ida (del más nuevo al más viejo)
 EQUIPO = "https://sports.core.api.espn.com/v2/sports/soccer/teams/%s"   # ~5 KB, trae el país
 PAISES = {"Argentina": "Argentina", "Brazil": "Brasil", "Uruguay": "Uruguay",
           "Paraguay": "Paraguay", "Chile": "Chile", "Colombia": "Colombia",
@@ -49,7 +49,7 @@ TRADUC = (("Argentine Liga Profesional de Fútbol", "Liga Profesional"),
           ("CONMEBOL ", "Copa "), ("Round of 32", "16avos de final"),
           ("Round of 16", "Octavos de final"), ("Quarterfinals", "Cuartos de final"),
           ("Semifinals", "Semifinal"), ("Group Stage", "Fase de grupos"),
-          ("Torneo ", ""), ("1st Leg", "ida"), ("2nd Leg", "vuelta"))
+          ("Torneo ", ""), ("1st Leg", "Ida"), ("2nd Leg", "Vuelta"))
 
 hermes_on = None        # desconocido hasta el primer chequeo
 pc_on     = None
@@ -89,11 +89,14 @@ def minutos():
     t = local()
     return t[3] * 60 + t[4]
 
+errores = {}            # último error de cada tarea, se ve con /log
+
 def seguro(fn):
     try:
         fn()
     except Exception as e:
         print(fn.__name__, "error:", e)
+        errores[fn.__name__] = repr(e)
         gc.collect()
 
 
@@ -274,7 +277,7 @@ def proximo_partido():
         copa = copa[5:]                           # "2026 Copa Argentina" -> "Copa Argentina"
     etapa = traducir(etapa or "")
     if llave:
-        etapa += ", " + traducir(llave)
+        etapa += " · " + traducir(llave)
     if estadio and ciudad and ciudad not in estadio:
         estadio += ", " + ciudad
     boca.update(ko=ko, local=yo[1] == "home", rival=otro[2], copa=traducir(copa or ""),
@@ -295,28 +298,33 @@ def corto(nombre):
     return "Boca" if nombre == "Boca Juniors" else nombre
 
 def buscar_ida(rival_id):
-    s = _leer(RESULTADOS % BOCA_ID, RES_BYTES)
-    p = s.find(b'"events":[')
-    while p >= 0:
-        p = s.find(b'"season":{', p)              # uno por partido
-        q = s.find(b'"competitors":', p) if p >= 0 else -1
-        if q < 0:
+    # la respuesta pesa ~440 KB: se lee de a pedazos y se corta al encontrar la ida
+    r = _get(RESULTADOS % BOCA_ID)
+    try:
+        f = _Flujo(r)
+        if not f.saltar(b'"events":['):
             return ""
-        eq = []
-        for _n in range(2):
-            ha, q = _val(s, "homeAway", q)
-            tid, q = _val(s, "id", q)
-            nom, q = _val(s, "displayName", q)
-            k = s.find(b'"score":{', q) if q >= 0 else -1
-            gol, q = _val(s, "displayValue", k) if k >= 0 else (None, -1)
-            if gol is None:
+        for _p in range(RES_PARTIDOS):
+            if not f.saltar(b'"competitors":['):
                 return ""
-            eq.append((tid, ha, corto(nom), gol))
-        if rival_id in (eq[0][0], eq[1][0]):
-            loc, vis = (eq[0], eq[1]) if eq[0][1] == "home" else (eq[1], eq[0])
-            return "%s %s-%s %s" % (loc[2], loc[3], vis[3], vis[2])
-        p = q
-    return ""
+            eq = []
+            for _n in range(2):
+                v = []
+                for pat in (b'"homeAway":"', b'"team":{"id":"', b'"displayName":"',
+                            b'"score":{', b'"displayValue":"'):
+                    if not f.saltar(pat):
+                        return ""
+                    if pat != b'"score":{':
+                        v.append(f.hasta(b'"').decode())
+                ha, tid, nom, gol = v
+                eq.append((tid, ha, corto(nom), gol))
+            if rival_id in (eq[0][0], eq[1][0]):
+                loc, vis = (eq[0], eq[1]) if eq[0][1] == "home" else (eq[1], eq[0])
+                return "%s %s-%s %s" % (loc[2], loc[3], vis[3], vis[2])
+        return ""
+    finally:
+        r.close()
+        gc.collect()
 
 class _Flujo:
     # lee una respuesta grande de a pedazos, sin guardarla entera
@@ -478,19 +486,30 @@ def comando(cmd):
         wol()
         return "Magic packet enviado 🖥️"
     if cmd.startswith("/log"):
-        return "Caídas de Hermes:\n" + ("\n".join(registro) or "Ninguna desde el último reinicio")
+        txt = "Caídas de Hermes:\n" + ("\n".join(registro) or "Ninguna desde el último reinicio")
+        if errores:
+            txt += "\n\nÚltimos errores:\n" + "\n".join("%s: %s" % kv for kv in errores.items())
+        return txt
     if cmd.startswith("/estado"):
         return "PC: %s\nHermes: %s" % (
             "Prendida ✅" if pc_on else "Apagada",
             "Online ✅" if hermes_on else "Caído ❌")
     if cmd.startswith("/boca"):
+        if not boca["anual"]:                     # recién arrancada: se carga ahora
+            boca["ult_anual"] = time.time()
+            try:
+                tabla_anual()
+            except Exception as e:
+                boca["err_anual"] = repr(e)
         txt = detalle_boca()
         if boca["escudo"] and boca["ko"]:
             try:
                 if foto(boca["escudo"], detalle_boca(True)):
                     return None
-            except Exception:
-                pass
+            except Exception as e:
+                # casi siempre la foto ya salió y solo falló la respuesta: no se repite el mensaje
+                errores["foto"] = repr(e)
+                return None
         return txt
     return None
 
