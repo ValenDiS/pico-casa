@@ -3,7 +3,7 @@
 #
 # - /pc: Wake-on-LAN a la PC
 # - LED: apagado si Hermes está caído, fijo si está online,
-#        titila si Hermes está online y juega Boca
+#        titila si Hermes está online y juega Boca (fixture de ESPN)
 # - Telegram avisa solo cuando Hermes se cae o la PC se prende
 
 import network, socket, time, gc
@@ -18,7 +18,7 @@ except ImportError:
 HERMES_URL  = "https://mihermes.duckdns.org/api/yo"   # sin sesión responde {"usuario":null} al instante
 HERMES_TIMEOUT = 6      # seg de espera antes de darlo por caído (menos que el watchdog de 8 s)
 PC_PUERTO   = 445       # puerto que Windows tenga abierto (445 o 3389)
-BOCA_ID     = 135156    # Boca Juniors en TheSportsDB (verificado)
+BOCA_ID     = "5"       # Boca Juniors en ESPN (verificado)
 PARTIDO_MIN = 120       # minutos que titila desde el arranque del partido
 TZ          = -3 * 3600
 
@@ -30,7 +30,11 @@ BOCA_CADA   = 3600      # seg entre consultas del próximo partido
 
 led  = Pin("LED", Pin.OUT)
 wlan = network.WLAN(network.STA_IF)
-SPORTSDB = "https://www.thesportsdb.com/api/v1/json/123/eventsnext.php?id=%d"
+# fixture de Boca en todas las competencias (liga, copas), ordenado por fecha
+ESPN = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/teams/%s/schedule?fixture=true"
+ESPN_BYTES = 20000      # alcanza para los 2 primeros partidos (la respuesta entera pesa ~45 KB)
+COPAS = (("Argentine Liga Profesional de Fútbol", "Liga Profesional"),
+         ("CONMEBOL ", "Copa "))
 
 hermes_on = None        # desconocido hasta el primer chequeo
 pc_on     = None
@@ -161,19 +165,72 @@ def chequear_hermes():
 
 # ---------- Boca ----------
 def a_segundos(s):
-    # "2026-10-14T00:30:00" (UTC) -> segundos en el reloj de la Pico (que está en UTC)
+    # "2026-10-21T00:30Z" (UTC) -> segundos en el reloj de la Pico (que está en UTC)
     return time.mktime((int(s[0:4]), int(s[5:7]), int(s[8:10]),
                         int(s[11:13]), int(s[14:16]), 0, 0, 0))
 
+def _val(s, clave, desde):
+    # valor de texto de "clave":"..." a partir de la posición desde
+    k = s.find(b'"' + clave.encode() + b'":"', desde)
+    if k < 0:
+        return None, -1
+    k += len(clave) + 4
+    f = s.find(b'"', k)
+    return s[k:f].decode(), f
+
+def _leer_fixture():
+    # La respuesta pesa ~45 KB: se leen solo los primeros bytes, sin parsear el JSON entero
+    try:
+        r = requests.get(ESPN % BOCA_ID, timeout=HERMES_TIMEOUT)
+    except TypeError:
+        r = requests.get(ESPN % BOCA_ID)
+    buf = b""
+    try:
+        while len(buf) < ESPN_BYTES:
+            alimentar()
+            c = r.raw.read(ESPN_BYTES - len(buf))
+            if not c:
+                break
+            buf += c
+    finally:
+        r.close()
+        gc.collect()
+    return buf
+
 def proximo_partido():
-    ev = get_json(SPORTSDB % BOCA_ID).get("events") or []
-    if ev:
-        e = ev[0]
-        ts = e.get("strTimestamp") or (e["dateEvent"] + "T" + e["strTime"])
-        local = str(e.get("idHomeTeam")) == str(BOCA_ID)
-        boca.update(ko=a_segundos(ts), local=local,
-                    rival=e.get("strAwayTeam" if local else "strHomeTeam") or "?",
-                    copa=e.get("strLeague") or "")
+    s = _leer_fixture()
+    i = s.find(b'"events":[')
+    if i < 0:
+        return                                    # respuesta rara: se deja lo que había
+    if s[i + 10:i + 11] == b"]":
+        boca.update(ko=None)                      # no hay partidos programados
+        return
+    p = i
+    while True:
+        p = s.find(b'"season":{', p)              # uno por partido
+        if p < 0:
+            return                                # se cortó la lectura: se reintenta después
+        copa, _ = _val(s, "displayName", p)
+        fecha, _ = _val(s, "date", p)             # fecha de la competición, en UTC
+        q = s.find(b'"competitors":', p)
+        eq = []
+        for _n in range(2):
+            ha, q = _val(s, "homeAway", q)
+            tid, q = _val(s, "id", q)
+            nom, q = _val(s, "displayName", q)
+            if nom is None:
+                return
+            eq.append((tid, ha, nom))
+        ko = a_segundos(fecha)
+        if ko + PARTIDO_MIN * 60 > time.time():   # saltea uno que ya terminó
+            break
+        p = q
+    yo, otro = (eq[0], eq[1]) if eq[0][0] == BOCA_ID else (eq[1], eq[0])
+    if copa[:4].isdigit():
+        copa = copa[5:]                           # "2026 Copa Argentina" -> "Copa Argentina"
+    for a, b in COPAS:
+        copa = copa.replace(a, b)
+    boca.update(ko=ko, local=yo[1] == "home", rival=otro[2], copa=copa)
 
 def texto_boca():
     if not boca["ko"]:
