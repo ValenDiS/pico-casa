@@ -37,6 +37,8 @@ ESPN_BYTES = 20000      # alcanza para los 2 primeros partidos (la respuesta ent
 # Tabla anual = Apertura (tipo 1) + Clausura (tipo 6). ESPN no la da armada, se suma.
 TABLA = "https://site.api.espn.com/apis/v2/sports/soccer/arg.1/standings?seasontype=%d"
 TORNEOS = (1, 6)
+RESULTADOS = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/teams/%s/schedule"
+RES_BYTES = 36000       # últimos ~4 partidos jugados (del más nuevo al más viejo)
 EQUIPO = "https://sports.core.api.espn.com/v2/sports/soccer/teams/%s"   # ~5 KB, trae el país
 PAISES = {"Argentina": "Argentina", "Brazil": "Brasil", "Uruguay": "Uruguay",
           "Paraguay": "Paraguay", "Chile": "Chile", "Colombia": "Colombia",
@@ -53,7 +55,7 @@ hermes_on = None        # desconocido hasta el primer chequeo
 pc_on     = None
 pc_fallos = 0
 boca = {"ko": None, "rival": "", "copa": "", "local": True, "ult": 0,
-        "etapa": "", "estadio": "", "escudo": "", "rival_id": "", "pais": "", "zona": "", "record": "",
+        "etapa": "", "estadio": "", "escudo": "", "rival_id": "", "pais": "", "ida": "", "ida_de": "", "zona": "", "record": "",
         "anual": None, "ult_anual": -ANUAL_CADA, "err_anual": "cargando"}
 DIAS = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
 t_h = t_pc = t_b = 0
@@ -272,14 +274,49 @@ def proximo_partido():
         copa = copa[5:]                           # "2026 Copa Argentina" -> "Copa Argentina"
     etapa = traducir(etapa or "")
     if llave:
-        etapa += " " + traducir(llave)
+        etapa += ", " + traducir(llave)
     if estadio and ciudad and ciudad not in estadio:
         estadio += ", " + ciudad
     boca.update(ko=ko, local=yo[1] == "home", rival=otro[2], copa=traducir(copa or ""),
                 etapa=etapa, estadio=estadio or "", escudo=otro[3])
+    s = None
+    gc.collect()
     if otro[0] != boca["rival_id"]:               # el país se busca una vez por rival
         pais, _ = _val(_leer(EQUIPO % otro[0], 6000), "country", 0)
         boca.update(rival_id=otro[0], pais=PAISES.get(pais, pais or ""))
+    if llave != "2nd Leg":
+        boca.update(ida="", ida_de="")
+    elif boca["ida_de"] != otro[0]:               # vuelta: se busca cómo salió la ida
+        ida = buscar_ida(otro[0])
+        if ida:
+            boca.update(ida=ida, ida_de=otro[0])
+
+def corto(nombre):
+    return "Boca" if nombre == "Boca Juniors" else nombre
+
+def buscar_ida(rival_id):
+    s = _leer(RESULTADOS % BOCA_ID, RES_BYTES)
+    p = s.find(b'"events":[')
+    while p >= 0:
+        p = s.find(b'"season":{', p)              # uno por partido
+        q = s.find(b'"competitors":', p) if p >= 0 else -1
+        if q < 0:
+            return ""
+        eq = []
+        for _n in range(2):
+            ha, q = _val(s, "homeAway", q)
+            tid, q = _val(s, "id", q)
+            nom, q = _val(s, "displayName", q)
+            k = s.find(b'"score":{', q) if q >= 0 else -1
+            gol, q = _val(s, "displayValue", k) if k >= 0 else (None, -1)
+            if gol is None:
+                return ""
+            eq.append((tid, ha, corto(nom), gol))
+        if rival_id in (eq[0][0], eq[1][0]):
+            loc, vis = (eq[0], eq[1]) if eq[0][1] == "home" else (eq[1], eq[0])
+            return "%s %s-%s %s" % (loc[2], loc[3], vis[3], vis[2])
+        p = q
+    return ""
 
 class _Flujo:
     # lee una respuesta grande de a pedazos, sin guardarla entera
@@ -339,7 +376,7 @@ def tabla_anual():
 def texto_anual():
     a = boca["anual"]
     if a:
-        return "%d° · %d pts (%d PJ)" % a
+        return "%d° · %d pts · %d PJ" % a
     return "sin datos (%s)" % boca["err_anual"]
 
 def cuando():
@@ -365,24 +402,39 @@ def texto_boca():
         return "Jugando ahora %s\n%s" % (linea, competencia())
     return "%s\n%s · %s" % (linea, competencia(), cuando())
 
-def detalle_boca():
+def detalle_boca(html=False):
+    def t(x):                                     # título en negrita si va con formato
+        return "<b>%s</b>" % x if html else x
+    def e(x):
+        return x.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") if html else x
     if not boca["ko"] or (boca["ko"] <= time.time() and not jugando()):
-        cab = "Sin próximo partido cargado"
+        partes = [t("PRÓXIMO PARTIDO") + "\nSin partido cargado"]
     else:
-        cab = "%s\nvs %s%s · %s\n%s\n%s" % (
-            "JUGANDO AHORA" if jugando() else "Próximo partido",
-            boca["rival"], " (%s)" % boca["pais"] if boca["pais"] not in ("", "Argentina") else "",
-            "Local" if boca["local"] else "Visitante", competencia(), cuando())
+        pais = boca["pais"] if boca["pais"] not in ("", "Argentina") else ""
+        lin = [t("JUGANDO AHORA" if jugando() else "PRÓXIMO PARTIDO"),
+               e(boca["rival"]) + (" (%s)" % e(pais) if pais else ""),
+               "%s · %s" % ("Local" if boca["local"] else "Visitante", cuando())]
         if boca["estadio"]:
-            cab += "\n" + boca["estadio"]
-    zona = "Clausura: %s° en la zona" % boca["zona"] if boca["zona"] else "Clausura"
+            lin.append(e(boca["estadio"]))
+        partes = ["\n".join(lin)]
+        lin = [t(e(boca["copa"]).upper())]
+        if boca["etapa"] not in ("", "Apertura", "Clausura"):   # en la liga ya lo dice abajo
+            lin.append(e(boca["etapa"]))
+        if boca["ida"]:
+            lin.append("Ida: " + e(boca["ida"]))
+        partes.append("\n".join(lin))
+    lin = [t("CLAUSURA")]
+    if boca["zona"]:
+        lin.append("Zona: %s°" % boca["zona"])
     if boca["record"]:
-        zona += " · " + boca["record"]
-    return "%s\n\n%s\nTabla anual: %s" % (cab, zona, texto_anual())
+        lin.append("Récord: " + boca["record"])
+    partes.append("\n".join(lin))
+    partes.append(t("TABLA ANUAL") + "\n" + texto_anual())
+    return "\n\n".join(partes)
 
 def foto(url, texto):
     url_tg = "https://api.telegram.org/bot%s/sendPhoto" % C.TG_TOKEN
-    datos = {"chat_id": C.TG_CHAT_ID, "photo": url, "caption": texto}
+    datos = {"chat_id": C.TG_CHAT_ID, "photo": url, "caption": texto, "parse_mode": "HTML"}
     alimentar()
     try:
         r = requests.post(url_tg, json=datos, timeout=HERMES_TIMEOUT)
@@ -435,7 +487,7 @@ def comando(cmd):
         txt = detalle_boca()
         if boca["escudo"] and boca["ko"]:
             try:
-                if foto(boca["escudo"], txt):
+                if foto(boca["escudo"], detalle_boca(True)):
                     return None
             except Exception:
                 pass
