@@ -37,6 +37,7 @@ ESPN_BYTES = 20000      # alcanza para los 2 primeros partidos (la respuesta ent
 # Tabla anual = Apertura (tipo 1) + Clausura (tipo 6). ESPN no la da armada, se suma.
 TABLA = "https://site.api.espn.com/apis/v2/sports/soccer/arg.1/standings?seasontype=%d"
 TORNEOS = (1, 6)
+FECHAS = 16             # fechas de cada torneo (Apertura y Clausura)
 RESULTADOS = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/teams/%s/schedule"
 RES_PARTIDOS = 6        # partidos jugados que se revisan buscando la ida (del más nuevo al más viejo)
 EQUIPO = "https://sports.core.api.espn.com/v2/sports/soccer/teams/%s"   # ~5 KB, trae el país
@@ -56,7 +57,7 @@ pc_on     = None
 pc_fallos = 0
 boca = {"ko": None, "rival": "", "copa": "", "local": True, "ult": 0,
         "etapa": "", "estadio": "", "escudo": "", "rival_id": "", "pais": "", "ida": "", "ida_de": "", "zona": "", "record": "",
-        "anual": None, "ult_anual": -ANUAL_CADA, "err_anual": "cargando"}
+        "anual": None, "clau": None, "ult_anual": -ANUAL_CADA, "err_anual": "cargando"}
 DIAS = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
 t_h = t_pc = t_b = 0
 blink = 0
@@ -369,6 +370,8 @@ def tabla_anual():
                     if not (f.saltar(b'"name":"' + st + b'"') and f.saltar(b'"value":')):
                         raise ValueError("respuesta cortada")
                     v.append(float(f.hasta(b',').decode()))
+                if t == TORNEOS[-1] and tid == BOCA_ID.encode():
+                    boca["clau"] = (int(v[2]), int(v[0]))       # puntos y jugados en el Clausura
                 a = tot.setdefault(tid, [0, 0, 0])
                 a[0] += v[2]; a[1] += v[1]; a[2] += v[0]
         finally:
@@ -381,10 +384,13 @@ def tabla_anual():
     boca["anual"] = (pos, int(yo[0]), int(yo[2]))
     boca["err_anual"] = None
 
+def quedan(n):
+    return "Queda 1 fecha" if n == 1 else "Quedan %d fechas" % n if n > 0 else "Terminado"
+
 def texto_anual():
     a = boca["anual"]
     if a:
-        return "%d° · %d pts · %d PJ" % a
+        return "%d° · %d pts · %d PJ\n%s" % (a + (quedan(2 * FECHAS - a[2]),))
     return "sin datos (%s)" % boca["err_anual"]
 
 def cuando():
@@ -432,10 +438,13 @@ def detalle_boca(html=False):
             lin.append("Ida: " + e(boca["ida"]))
         partes.append("\n".join(lin))
     lin = [t("CLAUSURA")]
+    c = boca["clau"]
     if boca["zona"]:
-        lin.append("Zona: %s°" % boca["zona"])
+        lin.append("Zona: %s°" % boca["zona"] + (" · %d pts" % c[0] if c else ""))
     if boca["record"]:
         lin.append("Récord: " + boca["record"])
+    if c:
+        lin.append(quedan(FECHAS - c[1]))
     partes.append("\n".join(lin))
     partes.append(t("TABLA ANUAL") + "\n" + texto_anual())
     return "\n\n".join(partes)
