@@ -419,10 +419,9 @@ def comando(cmd):
     if cmd.startswith("/log"):
         return "Caídas de Hermes:\n" + ("\n".join(registro) or "Ninguna desde el último reinicio")
     if cmd.startswith("/estado"):
-        b = texto_boca()
-        return "PC: %s\nHermes: %s\nBoca: %s\nTabla anual: %s" % (
+        return "PC: %s\nHermes: %s" % (
             "Prendida ✅" if pc_on else "Apagada",
-            "Online ✅" if hermes_on else "Caído ❌", b, texto_anual())
+            "Online ✅" if hermes_on else "Caído ❌")
     if cmd.startswith("/boca"):
         txt = detalle_boca()
         if boca["escudo"] and boca["ko"]:
