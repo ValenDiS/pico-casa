@@ -26,6 +26,7 @@ HERMES_CADA = 60        # seg entre chequeos de Hermes
 PC_CADA     = 15        # seg entre chequeos de la PC
 PC_FALLOS   = 4         # chequeos seguidos sin respuesta para darla por apagada (~1 min)
 BOCA_CADA   = 3600      # seg entre consultas del próximo partido
+ANUAL_CADA  = 3 * 3600  # seg entre consultas de la tabla anual
 # ====================================================
 
 led  = Pin("LED", Pin.OUT)
@@ -33,13 +34,21 @@ wlan = network.WLAN(network.STA_IF)
 # fixture de Boca en todas las competencias (liga, copas), ordenado por fecha
 ESPN = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/teams/%s/schedule?fixture=true"
 ESPN_BYTES = 20000      # alcanza para los 2 primeros partidos (la respuesta entera pesa ~45 KB)
-COPAS = (("Argentine Liga Profesional de Fútbol", "Liga Profesional"),
-         ("CONMEBOL ", "Copa "))
+# Tabla anual = Apertura (tipo 1) + Clausura (tipo 6). ESPN no la da armada, se suma.
+TABLA = "https://site.api.espn.com/apis/v2/sports/soccer/arg.1/standings?seasontype=%d"
+TORNEOS = (1, 6)
+TRADUC = (("Argentine Liga Profesional de Fútbol", "Liga Profesional"),
+          ("CONMEBOL ", "Copa "), ("Round of 32", "16avos de final"),
+          ("Round of 16", "Octavos de final"), ("Quarterfinals", "Cuartos de final"),
+          ("Semifinals", "Semifinal"), ("Group Stage", "Fase de grupos"),
+          ("Torneo ", ""), ("1st Leg", "ida"), ("2nd Leg", "vuelta"))
 
 hermes_on = None        # desconocido hasta el primer chequeo
 pc_on     = None
 pc_fallos = 0
-boca = {"ko": None, "rival": "", "copa": "", "local": True, "ult": 0}
+boca = {"ko": None, "rival": "", "copa": "", "local": True, "ult": 0,
+        "etapa": "", "estadio": "", "escudo": "", "zona": "", "record": "",
+        "anual": None, "ult_anual": -ANUAL_CADA}
 DIAS = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
 t_h = t_pc = t_b = 0
 blink = 0
@@ -169,21 +178,29 @@ def a_segundos(s):
     return time.mktime((int(s[0:4]), int(s[5:7]), int(s[8:10]),
                         int(s[11:13]), int(s[14:16]), 0, 0, 0))
 
-def _val(s, clave, desde):
-    # valor de texto de "clave":"..." a partir de la posición desde
+def _val(s, clave, desde, hasta=None):
+    # valor de texto de "clave":"..." a partir de desde (y antes de hasta)
     k = s.find(b'"' + clave.encode() + b'":"', desde)
-    if k < 0:
+    if k < 0 or (hasta is not None and k > hasta):
         return None, -1
     k += len(clave) + 4
     f = s.find(b'"', k)
     return s[k:f].decode(), f
 
+def traducir(t):
+    for a, b in TRADUC:
+        t = t.replace(a, b)
+    return t
+
+def _get(url):
+    try:
+        return requests.get(url, timeout=HERMES_TIMEOUT)
+    except TypeError:
+        return requests.get(url)
+
 def _leer_fixture():
     # La respuesta pesa ~45 KB: se leen solo los primeros bytes, sin parsear el JSON entero
-    try:
-        r = requests.get(ESPN % BOCA_ID, timeout=HERMES_TIMEOUT)
-    except TypeError:
-        r = requests.get(ESPN % BOCA_ID)
+    r = _get(ESPN % BOCA_ID)
     buf = b""
     try:
         while len(buf) < ESPN_BYTES:
@@ -202,6 +219,18 @@ def proximo_partido():
     i = s.find(b'"events":[')
     if i < 0:
         return                                    # respuesta rara: se deja lo que había
+    # del equipo (va antes de los partidos): puesto en la zona y récord G-E-P
+    zona, _ = _val(s, "standingSummary", 0, i)
+    rec, _ = _val(s, "recordSummary", 0, i)
+    if zona:
+        n = ""
+        for ch in zona:
+            if not ch.isdigit():
+                break
+            n += ch
+        boca["zona"] = n
+    if rec and rec.count("-") == 2:
+        boca["record"] = "%sG %sE %sP" % tuple(rec.split("-"))
     if s[i + 10:i + 11] == b"]":
         boca.update(ko=None)                      # no hay partidos programados
         return
@@ -210,36 +239,98 @@ def proximo_partido():
         p = s.find(b'"season":{', p)              # uno por partido
         if p < 0:
             return                                # se cortó la lectura: se reintenta después
-        copa, _ = _val(s, "displayName", p)
-        fecha, _ = _val(s, "date", p)             # fecha de la competición, en UTC
         q = s.find(b'"competitors":', p)
+        if q < 0:
+            return
+        copa, _ = _val(s, "displayName", p, q)
+        etapa, _ = _val(s, "name", s.find(b'"seasonType":', p), q)
+        fecha, _ = _val(s, "date", p, q)          # en UTC
+        llave, _ = _val(s, "displayValue", s.find(b'"leg":', p), q) if s.find(b'"leg":', p, q) > 0 else (None, 0)
+        estadio, _ = _val(s, "fullName", p, q)
+        ciudad, _ = _val(s, "city", p, q)
         eq = []
         for _n in range(2):
             ha, q = _val(s, "homeAway", q)
             tid, q = _val(s, "id", q)
             nom, q = _val(s, "displayName", q)
-            if nom is None:
+            logo, q = _val(s, "href", q)
+            if logo is None:
                 return
-            eq.append((tid, ha, nom))
+            eq.append((tid, ha, nom, logo))
         ko = a_segundos(fecha)
         if ko + PARTIDO_MIN * 60 > time.time():   # saltea uno que ya terminó
             break
         p = q
     yo, otro = (eq[0], eq[1]) if eq[0][0] == BOCA_ID else (eq[1], eq[0])
-    if copa[:4].isdigit():
+    if copa and copa[:4].isdigit():
         copa = copa[5:]                           # "2026 Copa Argentina" -> "Copa Argentina"
-    for a, b in COPAS:
-        copa = copa.replace(a, b)
-    boca.update(ko=ko, local=yo[1] == "home", rival=otro[2], copa=copa)
+    etapa = traducir(etapa or "")
+    if llave:
+        etapa += " " + traducir(llave)
+    if estadio and ciudad and ciudad not in estadio:
+        estadio += ", " + ciudad
+    boca.update(ko=ko, local=yo[1] == "home", rival=otro[2], copa=traducir(copa or ""),
+                etapa=etapa, estadio=estadio or "", escudo=otro[3])
 
-def texto_boca():
-    if not boca["ko"]:
-        return "Sin próximo partido cargado"
-    linea = "vs %s (%s)" % (boca["rival"], "Local" if boca["local"] else "Visitante")
-    if jugando():
-        return "Jugando ahora %s\n%s" % (linea, boca["copa"])
-    if boca["ko"] <= time.time():
-        return "Sin próximo partido cargado"
+class _Flujo:
+    # lee una respuesta grande de a pedazos, sin guardarla entera
+    def __init__(s, r):
+        s.r, s.b = r, b""
+    def _mas(s):
+        alimentar()
+        c = s.r.raw.read(1024)
+        if not c:
+            return False
+        s.b += c
+        return True
+    def saltar(s, pat):                           # avanza hasta después de pat
+        while True:
+            k = s.b.find(pat)
+            if k >= 0:
+                s.b = s.b[k + len(pat):]
+                return True
+            s.b = s.b[-len(pat):]
+            if not s._mas():
+                return False
+    def hasta(s, fin):                            # devuelve lo que hay hasta fin
+        while True:
+            k = s.b.find(fin)
+            if k >= 0:
+                v = s.b[:k]
+                s.b = s.b[k + 1:]
+                return v
+            if not s._mas():
+                return None
+
+def tabla_anual():
+    tot = {}                                      # id -> [puntos, dif. de gol, jugados]
+    for t in TORNEOS:
+        r = _get(TABLA % t)
+        try:
+            f = _Flujo(r)
+            while f.saltar(b'"team":{"id":"'):
+                tid = f.hasta(b'"')
+                v = []
+                for st in (b'gamesPlayed', b'pointDifferential', b'points'):
+                    if not (f.saltar(b'"name":"' + st + b'"') and f.saltar(b'"value":')):
+                        return                    # se cortó: queda el dato anterior
+                    v.append(float(f.hasta(b',').decode()))
+                a = tot.setdefault(tid, [0, 0, 0])
+                a[0] += v[2]; a[1] += v[1]; a[2] += v[0]
+        finally:
+            r.close()
+            gc.collect()
+    yo = tot.get(BOCA_ID.encode())
+    if not yo:
+        return
+    pos = 1 + sum(1 for x in tot.values() if (x[0], x[1]) > (yo[0], yo[1]))
+    boca["anual"] = (pos, int(yo[0]), int(yo[2]))
+
+def texto_anual():
+    a = boca["anual"]
+    return "%d° · %d pts (%d PJ)" % a if a else "sin datos"
+
+def cuando():
     t = time.localtime(boca["ko"] + TZ)
     hoy = time.localtime(time.time() + TZ)
     manana = time.localtime(time.time() + TZ + 86400)
@@ -249,7 +340,47 @@ def texto_boca():
         dia = "Mañana"
     else:
         dia = "%s %02d/%02d" % (DIAS[t[6]], t[2], t[1])
-    return "%s\n%s · %s %02d:%02d" % (linea, boca["copa"], dia, t[3], t[4])
+    return "%s %02d:%02d" % (dia, t[3], t[4])
+
+def competencia():
+    return boca["copa"] + (" · " + boca["etapa"] if boca["etapa"] else "")
+
+def texto_boca():
+    if not boca["ko"] or (boca["ko"] <= time.time() and not jugando()):
+        return "Sin próximo partido cargado"
+    linea = "vs %s (%s)" % (boca["rival"], "Local" if boca["local"] else "Visitante")
+    if jugando():
+        return "Jugando ahora %s\n%s" % (linea, competencia())
+    return "%s\n%s · %s" % (linea, competencia(), cuando())
+
+def detalle_boca():
+    if not boca["ko"] or (boca["ko"] <= time.time() and not jugando()):
+        cab = "Sin próximo partido cargado"
+    else:
+        cab = "%s\nvs %s (%s)\n%s\n%s" % (
+            "JUGANDO AHORA" if jugando() else "Próximo partido",
+            boca["rival"], "Local" if boca["local"] else "Visitante",
+            competencia(), cuando())
+        if boca["estadio"]:
+            cab += "\n" + boca["estadio"]
+    zona = "Clausura: %s° en la zona" % boca["zona"] if boca["zona"] else "Clausura"
+    if boca["record"]:
+        zona += " · " + boca["record"]
+    return "%s\n\n%s\nTabla anual: %s" % (cab, zona, texto_anual())
+
+def foto(url, texto):
+    url_tg = "https://api.telegram.org/bot%s/sendPhoto" % C.TG_TOKEN
+    datos = {"chat_id": C.TG_CHAT_ID, "photo": url, "caption": texto}
+    alimentar()
+    try:
+        r = requests.post(url_tg, json=datos, timeout=HERMES_TIMEOUT)
+    except TypeError:
+        r = requests.post(url_tg, json=datos)
+    try:
+        return r.status_code == 200
+    finally:
+        r.close()
+        gc.collect()
 
 def jugando():
     ko = boca["ko"]
@@ -264,6 +395,9 @@ def tick_boca():
     if now - boca["ult"] >= espera:
         boca["ult"] = now
         proximo_partido()
+    elif now - boca["ult_anual"] >= ANUAL_CADA:
+        boca["ult_anual"] = now
+        tabla_anual()
 
 
 # ---------- interfaz con main.py ----------
@@ -279,9 +413,18 @@ def comando(cmd):
         return "Caídas de Hermes:\n" + ("\n".join(registro) or "Ninguna desde el último reinicio")
     if cmd.startswith("/estado"):
         b = texto_boca()
-        return "PC: %s\nHermes: %s\nBoca: %s" % (
+        return "PC: %s\nHermes: %s\nBoca: %s\nTabla anual: %s" % (
             "Prendida ✅" if pc_on else "Apagada",
-            "Online ✅" if hermes_on else "Caído ❌", b)
+            "Online ✅" if hermes_on else "Caído ❌", b, texto_anual())
+    if cmd.startswith("/boca"):
+        txt = detalle_boca()
+        if boca["escudo"] and boca["ko"]:
+            try:
+                if foto(boca["escudo"], txt):
+                    return None
+            except Exception:
+                pass
+        return txt
     return None
 
 def tick():                       # main.py lo llama cada ~0,5 s
