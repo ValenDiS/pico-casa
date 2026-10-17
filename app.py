@@ -48,7 +48,7 @@ pc_on     = None
 pc_fallos = 0
 boca = {"ko": None, "rival": "", "copa": "", "local": True, "ult": 0,
         "etapa": "", "estadio": "", "escudo": "", "zona": "", "record": "",
-        "anual": None, "ult_anual": -ANUAL_CADA}
+        "anual": None, "ult_anual": -ANUAL_CADA, "err_anual": "cargando"}
 DIAS = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
 t_h = t_pc = t_b = 0
 blink = 0
@@ -313,7 +313,7 @@ def tabla_anual():
                 v = []
                 for st in (b'gamesPlayed', b'pointDifferential', b'points'):
                     if not (f.saltar(b'"name":"' + st + b'"') and f.saltar(b'"value":')):
-                        return                    # se cortó: queda el dato anterior
+                        raise ValueError("respuesta cortada")
                     v.append(float(f.hasta(b',').decode()))
                 a = tot.setdefault(tid, [0, 0, 0])
                 a[0] += v[2]; a[1] += v[1]; a[2] += v[0]
@@ -322,13 +322,16 @@ def tabla_anual():
             gc.collect()
     yo = tot.get(BOCA_ID.encode())
     if not yo:
-        return
+        raise ValueError("Boca no está en la tabla (%d equipos)" % len(tot))
     pos = 1 + sum(1 for x in tot.values() if (x[0], x[1]) > (yo[0], yo[1]))
     boca["anual"] = (pos, int(yo[0]), int(yo[2]))
+    boca["err_anual"] = None
 
 def texto_anual():
     a = boca["anual"]
-    return "%d° · %d pts (%d PJ)" % a if a else "sin datos"
+    if a:
+        return "%d° · %d pts (%d PJ)" % a
+    return "sin datos (%s)" % boca["err_anual"]
 
 def cuando():
     t = time.localtime(boca["ko"] + TZ)
@@ -397,7 +400,11 @@ def tick_boca():
         proximo_partido()
     elif now - boca["ult_anual"] >= ANUAL_CADA:
         boca["ult_anual"] = now
-        tabla_anual()
+        try:
+            tabla_anual()
+        except Exception as e:
+            boca["err_anual"] = repr(e)
+            gc.collect()
 
 
 # ---------- interfaz con main.py ----------
