@@ -37,6 +37,12 @@ ESPN_BYTES = 20000      # alcanza para los 2 primeros partidos (la respuesta ent
 # Tabla anual = Apertura (tipo 1) + Clausura (tipo 6). ESPN no la da armada, se suma.
 TABLA = "https://site.api.espn.com/apis/v2/sports/soccer/arg.1/standings?seasontype=%d"
 TORNEOS = (1, 6)
+EQUIPO = "https://sports.core.api.espn.com/v2/sports/soccer/teams/%s"   # ~5 KB, trae el país
+PAISES = {"Argentina": "Argentina", "Brazil": "Brasil", "Uruguay": "Uruguay",
+          "Paraguay": "Paraguay", "Chile": "Chile", "Colombia": "Colombia",
+          "Ecuador": "Ecuador", "Peru": "Perú", "Bolivia": "Bolivia",
+          "Venezuela": "Venezuela", "Mexico": "México", "Spain": "España",
+          "United States": "Estados Unidos"}
 TRADUC = (("Argentine Liga Profesional de Fútbol", "Liga Profesional"),
           ("CONMEBOL ", "Copa "), ("Round of 32", "16avos de final"),
           ("Round of 16", "Octavos de final"), ("Quarterfinals", "Cuartos de final"),
@@ -47,7 +53,7 @@ hermes_on = None        # desconocido hasta el primer chequeo
 pc_on     = None
 pc_fallos = 0
 boca = {"ko": None, "rival": "", "copa": "", "local": True, "ult": 0,
-        "etapa": "", "estadio": "", "escudo": "", "zona": "", "record": "",
+        "etapa": "", "estadio": "", "escudo": "", "rival_id": "", "pais": "", "zona": "", "record": "",
         "anual": None, "ult_anual": -ANUAL_CADA, "err_anual": "cargando"}
 DIAS = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
 t_h = t_pc = t_b = 0
@@ -198,14 +204,14 @@ def _get(url):
     except TypeError:
         return requests.get(url)
 
-def _leer_fixture():
-    # La respuesta pesa ~45 KB: se leen solo los primeros bytes, sin parsear el JSON entero
-    r = _get(ESPN % BOCA_ID)
+def _leer(url, n):
+    # lee solo los primeros n bytes de la respuesta, sin parsear el JSON entero
+    r = _get(url)
     buf = b""
     try:
-        while len(buf) < ESPN_BYTES:
+        while len(buf) < n:
             alimentar()
-            c = r.raw.read(ESPN_BYTES - len(buf))
+            c = r.raw.read(n - len(buf))
             if not c:
                 break
             buf += c
@@ -215,7 +221,7 @@ def _leer_fixture():
     return buf
 
 def proximo_partido():
-    s = _leer_fixture()
+    s = _leer(ESPN % BOCA_ID, ESPN_BYTES)   # la respuesta entera pesa ~45 KB
     i = s.find(b'"events":[')
     if i < 0:
         return                                    # respuesta rara: se deja lo que había
@@ -271,6 +277,9 @@ def proximo_partido():
         estadio += ", " + ciudad
     boca.update(ko=ko, local=yo[1] == "home", rival=otro[2], copa=traducir(copa or ""),
                 etapa=etapa, estadio=estadio or "", escudo=otro[3])
+    if otro[0] != boca["rival_id"]:               # el país se busca una vez por rival
+        pais, _ = _val(_leer(EQUIPO % otro[0], 6000), "country", 0)
+        boca.update(rival_id=otro[0], pais=PAISES.get(pais, pais or ""))
 
 class _Flujo:
     # lee una respuesta grande de a pedazos, sin guardarla entera
@@ -360,10 +369,10 @@ def detalle_boca():
     if not boca["ko"] or (boca["ko"] <= time.time() and not jugando()):
         cab = "Sin próximo partido cargado"
     else:
-        cab = "%s\nvs %s (%s)\n%s\n%s" % (
+        cab = "%s\nvs %s%s · %s\n%s\n%s" % (
             "JUGANDO AHORA" if jugando() else "Próximo partido",
-            boca["rival"], "Local" if boca["local"] else "Visitante",
-            competencia(), cuando())
+            boca["rival"], " (%s)" % boca["pais"] if boca["pais"] else "",
+            "Local" if boca["local"] else "Visitante", competencia(), cuando())
         if boca["estadio"]:
             cab += "\n" + boca["estadio"]
     zona = "Clausura: %s° en la zona" % boca["zona"] if boca["zona"] else "Clausura"
