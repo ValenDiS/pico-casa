@@ -57,7 +57,7 @@ pc_on     = None
 pc_fallos = 0
 boca = {"ko": None, "rival": "", "copa": "", "local": True, "ult": 0,
         "etapa": "", "estadio": "", "escudo": "", "rival_id": "", "pais": "", "ida": "", "ida_de": "", "zona": "", "record": "",
-        "anual": None, "clau": None, "ult_anual": -ANUAL_CADA, "err_anual": "cargando"}
+        "anual": None, "clau": None, "record_anual": "", "ult_anual": -ANUAL_CADA, "err_anual": "cargando"}
 DIAS = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
 t_h = t_pc = t_b = 0
 blink = 0
@@ -359,6 +359,7 @@ class _Flujo:
 
 def tabla_anual():
     tot = {}                                      # id -> [puntos, dif. de gol, jugados]
+    gep = [0, 0, 0]                               # ganados, empatados y perdidos de Boca en el año
     for t in TORNEOS:
         r = _get(TABLA % t)
         try:
@@ -366,14 +367,19 @@ def tabla_anual():
             while f.saltar(b'"team":{"id":"'):
                 tid = f.hasta(b'"')
                 v = []
-                for st in (b'gamesPlayed', b'pointDifferential', b'points'):
+                # en el orden en que vienen en la respuesta
+                for st in (b'gamesPlayed', b'losses', b'pointDifferential', b'points',
+                           b'ties', b'wins'):
                     if not (f.saltar(b'"name":"' + st + b'"') and f.saltar(b'"value":')):
                         raise ValueError("respuesta cortada")
                     v.append(float(f.hasta(b',').decode()))
-                if t == TORNEOS[-1] and tid == BOCA_ID.encode():
-                    boca["clau"] = (int(v[2]), int(v[0]))       # puntos y jugados en el Clausura
+                pj, pp, dif, pts, pe, pg = v
+                if tid == BOCA_ID.encode():
+                    gep[0] += int(pg); gep[1] += int(pe); gep[2] += int(pp)
+                    if t == TORNEOS[-1]:
+                        boca["clau"] = (int(pts), int(pj))    # puntos y jugados en el Clausura
                 a = tot.setdefault(tid, [0, 0, 0])
-                a[0] += v[2]; a[1] += v[1]; a[2] += v[0]
+                a[0] += pts; a[1] += dif; a[2] += pj
         finally:
             r.close()
             gc.collect()
@@ -382,6 +388,7 @@ def tabla_anual():
         raise ValueError("Boca no está en la tabla (%d equipos)" % len(tot))
     pos = 1 + sum(1 for x in tot.values() if (x[0], x[1]) > (yo[0], yo[1]))
     boca["anual"] = (pos, int(yo[0]), int(yo[2]))
+    boca["record_anual"] = "%dG %dE %dP" % tuple(gep)
     boca["err_anual"] = None
 
 def quedan(n):
@@ -390,7 +397,8 @@ def quedan(n):
 def texto_anual():
     a = boca["anual"]
     if a:
-        return "%d° · %d pts · %d PJ\n%s" % (a + (quedan(2 * FECHAS - a[2]),))
+        return "%d° · %d pts · %d PJ\nRécord: %s\n%s" % (
+            a + (boca["record_anual"], quedan(2 * FECHAS - a[2])))
     return "sin datos (%s)" % boca["err_anual"]
 
 def cuando():
@@ -440,7 +448,7 @@ def detalle_boca(html=False):
     lin = [t("CLAUSURA")]
     c = boca["clau"]
     if boca["zona"]:
-        lin.append("Zona: %s°" % boca["zona"] + (" · %d pts" % c[0] if c else ""))
+        lin.append("Zona: %s°" % boca["zona"] + (" · %d pts · %d PJ" % c if c else ""))
     if boca["record"]:
         lin.append("Récord: " + boca["record"])
     if c:
