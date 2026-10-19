@@ -5,7 +5,7 @@
 # - LED: apagado si Hermes está caído, fijo si está online,
 #        titila si Hermes está online y juega Boca (fixture de ESPN)
 # - Telegram avisa solo cuando Hermes se cae o la PC se prende
-# - TV Samsung: al prenderse abre el Launcher (o Flow si no abre); /tv lo abre a mano
+# - TV Samsung: al prenderse abre el Launcher (o Flow si no abre); /tv la prende por WoL
 
 import network, socket, time, gc
 from machine import Pin
@@ -118,8 +118,8 @@ def broadcast():
     mask = [int(x) for x in mask.split(".")]
     return ".".join(str(i | (255 - m)) for i, m in zip(ip, mask))
 
-def wol():
-    mac = bytes(int(b, 16) for b in C.PC_MAC.replace("-", ":").split(":"))
+def wol(mac_txt=None):
+    mac = bytes(int(b, 16) for b in (mac_txt or C.PC_MAC).replace("-", ":").split(":"))
     pkt = b"\xff" * 6 + mac * 16
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -157,6 +157,27 @@ def chequear_pc():
 
 # ---------- TV Samsung ----------
 TV_API = "http://%s:8001/api/v2/" % TV_IP
+TV_MAC_ARCHIVO = "tv_mac.txt"   # la MAC se aprende sola de la API la primera vez que la ve prendida
+
+def tv_mac():
+    if getattr(C, "TV_MAC", ""):
+        return C.TV_MAC
+    if tv.get("mac") is None:
+        try:
+            with open(TV_MAC_ARCHIVO) as f:
+                tv["mac"] = f.read().strip()
+        except OSError:
+            tv["mac"] = ""
+    return tv["mac"]
+
+def tv_guardar_mac(mac):
+    if mac and len(mac) == 17 and mac.upper() != tv_mac().upper():
+        tv["mac"] = mac
+        try:
+            with open(TV_MAC_ARCHIVO, "w") as f:
+                f.write(mac)
+        except OSError as e:
+            errores["tv_mac"] = repr(e)
 
 def tv_estado():
     # True = prendida, False = standby/apagada, None = no se sabe (no cambia nada)
@@ -167,8 +188,10 @@ def tv_estado():
             r = requests.get(TV_API, timeout=TV_TIMEOUT)
         except TypeError:                         # requests sin timeout
             r = requests.get(TV_API)
-        ps = r.json().get("device", {}).get("PowerState")
+        dev = r.json().get("device", {})
+        ps = dev.get("PowerState")
         tv["estado"] = str(ps)
+        tv_guardar_mac(dev.get("wifiMac", ""))
         if ps is None:
             return None
         return ps == "on"                         # "standby" u otro valor: no prendida
@@ -597,9 +620,16 @@ def comando(cmd):
             "Online ✅" if hermes_on else "Caído ❌",
             "Prendida ✅" if tv["on"] else "Apagada", tv["estado"] or "sin datos")
     if cmd.startswith("/tv"):
-        if tv_abrir():
-            return "Abierta en la TV: " + ("Launcher" if tv["app"] == TV_APPS[0] else "Flow")
-        return "No pude abrir nada en la TV (ver /log)"
+        if tv["on"]:                              # ya prendida: abre la app
+            if tv_abrir():
+                return "Abierta en la TV: " + ("Launcher" if tv["app"] == TV_APPS[0] else "Flow")
+            return "No pude abrir nada en la TV (ver /log)"
+        mac = tv_mac()
+        if not mac:
+            return "Todavía no sé la MAC de la TV: prendela una vez a mano y después /tv ya la prende"
+        wol(mac)                                  # al detectarla prendida abre el Launcher sola
+        tv["on"] = False                          # así el encendido cuenta como transición
+        return "Prendiendo la TV 📺 (abre el Launcher cuando arranque)"
     if cmd.startswith("/boca"):
         if not boca["anual"]:                     # recién arrancada: se carga ahora
             boca["ult_anual"] = time.time()
