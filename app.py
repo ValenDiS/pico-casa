@@ -206,27 +206,56 @@ def tv_estado():
             r.close()
         gc.collect()
 
+def tv_visible(app):
+    # True si la app está en pantalla (GET /applications/<id> -> {"visible": true})
+    alimentar()
+    r = None
+    try:
+        try:
+            r = requests.get(TV_API + "applications/" + app, timeout=TV_TIMEOUT)
+        except TypeError:
+            r = requests.get(TV_API + "applications/" + app)
+        return bool(r.json().get("visible"))
+    except Exception:
+        return False
+    finally:
+        if r:
+            r.close()
+        gc.collect()
+
 def tv_abrir():
-    # prueba las apps en orden; True si alguna abrió
+    # prueba las apps en orden; True si alguna abrió.
+    # La TV a veces abre la app pero responde raro o tarda (timeout): antes de pasar
+    # a la siguiente se confirma si quedó en pantalla, para no abrir dos.
     for app in TV_APPS:
         alimentar()
         r = None
+        ok = False
         try:
             url = TV_API + "applications/" + app
             try:
                 r = requests.post(url, headers={"Content-Length": "0"}, timeout=5)
             except TypeError:
                 r = requests.post(url, headers={"Content-Length": "0"})
-            if r.text.strip() == "true":
-                tv["app"] = app
-                return True
-            errores["tv_" + app] = "respondió " + r.text.strip()[:40]
+            txt = r.text.strip()
+            ok = r.status_code == 200 and txt != "false"
+            if not ok:
+                errores["tv_" + app] = "HTTP %d: %s" % (r.status_code, txt[:40])
         except Exception as e:
             errores["tv_" + app] = repr(e)
         finally:
             if r:
                 r.close()
             gc.collect()
+        if not ok:
+            for _ in range(3):                    # le da hasta ~3 s para aparecer
+                time.sleep(1)
+                if tv_visible(app):
+                    ok = True
+                    break
+        if ok:
+            tv["app"] = app
+            return True
     return False
 
 def chequear_tv():
@@ -620,7 +649,10 @@ def comando(cmd):
             "Online ✅" if hermes_on else "Caído ❌",
             "Prendida ✅" if tv["on"] else "Apagada", tv["estado"] or "sin datos")
     if cmd.startswith("/tv"):
-        if tv["on"]:                              # ya prendida: abre la app
+        on = tv_estado()                          # estado fresco, no el del último chequeo
+        if on is not None:
+            tv["on"] = on
+        if on:                              # ya prendida: abre la app
             if tv_abrir():
                 return "Abierta en la TV: " + ("Launcher" if tv["app"] == TV_APPS[0] else "Flow")
             return "No pude abrir nada en la TV (ver /log)"
