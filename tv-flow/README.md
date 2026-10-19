@@ -1,6 +1,6 @@
 # tv-flow
 
-Programa aparte para la **Pico 2 W** (no la Pico W de `app.py`): abre Flow en la TV Samsung (UN65AU7000G, Tizen 6.0) cada vez que se prende, usando la API REST de la TV en el puerto 8001.
+Programa aparte para la **Pico 2 W** (no la Pico W de `app.py`): abre el Launcher (o Flow si el Launcher no abre) en la TV Samsung (UN65AU7000G, Tizen 6.0) cada vez que se prende, usando la API REST de la TV en el puerto 8001.
 
 - `GET /api/v2/` → `device.PowerState` (`"on"` = prendida)
 - `POST /api/v2/applications/<APP_ID>` → abre la app (responde `true`)

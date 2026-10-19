@@ -9,7 +9,8 @@ import rp2
 import config
 
 TV_IP = config.TV_IP
-APP_ID = config.APP_ID
+# Apps a abrir, en orden: si la primera falla se prueba la siguiente.
+APP_IDS = getattr(config, "APP_IDS", None) or [config.APP_ID]
 POLL_SECONDS = getattr(config, "POLL_SECONDS", 3)
 LAUNCH_DELAY_SECONDS = getattr(config, "LAUNCH_DELAY_SECONDS", 6)
 OFF_CONFIRM = getattr(config, "OFF_CONFIRM", 3)   # lecturas seguidas de "apagada" para darla por apagada
@@ -63,22 +64,29 @@ def tv_state():
             r.close()
 
 
+def open_app(app_id):
+    r = None
+    try:
+        r = urequests.post(BASE + "applications/" + app_id,
+                           headers={"Content-Length": "0"}, timeout=5)
+        text = r.text.strip()
+        if text == "true":
+            print("App abierta:", app_id)
+            return True
+        print("Respuesta al abrir", app_id, ":", text)
+    except Exception as e:
+        print("Fallo al abrir", app_id, ":", e)
+    finally:
+        if r:
+            r.close()
+    return False
+
+
 def launch_app():
-    for _ in range(3):
-        r = None
-        try:
-            r = urequests.post(BASE + "applications/" + APP_ID,
-                               headers={"Content-Length": "0"}, timeout=5)
-            text = r.text.strip()
-            if text == "true":
-                print("App abierta")
+    for _ in range(3):                # la TV recién prendida a veces no responde
+        for app_id in APP_IDS:
+            if open_app(app_id):
                 return True
-            print("Respuesta al abrir:", text)
-        except Exception as e:
-            print("Fallo al abrir:", e)
-        finally:
-            if r:
-                r.close()
         time.sleep(3)
     return False
 
