@@ -5,11 +5,12 @@ Automatizaciones de casa con Raspberry Pi Pico W, controladas por Telegram.
 - `/pc`: prende la PC por Wake-on-LAN
 - LED: apagado si Hermes está caído, fijo si está online, titila si además juega Boca
 - Telegram avisa cuando Hermes se cae o la PC se prende
+- TV Samsung: al prenderse abre el Launcher (o Flow si no abre). `/tv` lo abre a mano
 
 ## Archivos
 - `app.py`: la lógica. Es lo único que vive en este repo; se actualiza en la Pico con `/update`.
 - `main.py` y `config.py`: van solo en la Pico. `config.py` tiene las claves y nunca se sube.
 
-- `tv-flow/`: programa aparte para la Pico 2 W que abre Flow en la TV Samsung al prenderla. No lo toca `/update`.
+- `tv-flow/`: versión standalone de lo de la TV para otra Pico. No hace falta si se usa `app.py`.
 
-Comandos: `/pc` `/estado` `/log` `/update` `/rollback` `/reset` `/ayuda`
+Comandos: `/pc` `/tv` `/estado` `/log` `/update` `/rollback` `/reset` `/ayuda`

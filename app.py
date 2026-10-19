@@ -5,6 +5,7 @@
 # - LED: apagado si Hermes está caído, fijo si está online,
 #        titila si Hermes está online y juega Boca (fixture de ESPN)
 # - Telegram avisa solo cuando Hermes se cae o la PC se prende
+# - TV Samsung: al prenderse abre el Launcher (o Flow si no abre); /tv lo abre a mano
 
 import network, socket, time, gc
 from machine import Pin
@@ -27,6 +28,14 @@ PC_CADA     = 15        # seg entre chequeos de la PC
 PC_FALLOS   = 4         # chequeos seguidos sin respuesta para darla por apagada (~1 min)
 BOCA_CADA   = 3600      # seg entre consultas del próximo partido
 ANUAL_CADA  = 3 * 3600  # seg entre consultas de la tabla anual
+
+TV_IP       = "192.168.0.5"                          # TV Samsung (API REST en :8001)
+TV_APPS     = ("VLaunchr01.Launcher", "3202002020098")   # al prenderla: Launcher y, si no abre, Flow
+TV_CADA     = 3         # seg entre chequeos de la TV
+TV_TIMEOUT  = 2         # seg de espera de la TV
+TV_FALLOS   = 3         # chequeos seguidos "apagada" para darla por apagada (un timeout suelto no relanza la app)
+TV_DEMORA   = 6         # seg tras prenderse antes de abrir la app
+TV_INTENTOS = 3         # vueltas por la lista de apps si la TV no responde
 # ====================================================
 
 led  = Pin("LED", Pin.OUT)
@@ -59,7 +68,8 @@ boca = {"ko": None, "rival": "", "copa": "", "local": True, "ult": 0,
         "etapa": "", "estadio": "", "escudo": "", "rival_id": "", "pais": "", "ida": "", "ida_de": "", "zona": "", "record": "",
         "anual": None, "clau": None, "record_anual": "", "ult_anual": -ANUAL_CADA, "err_anual": "cargando"}
 DIAS = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
-t_h = t_pc = t_b = 0
+tv = {"on": None, "fallos": 0, "abrir_en": None, "intentos": 0, "estado": "", "app": ""}
+t_h = t_pc = t_b = t_tv = 0
 blink = 0
 _send = print
 
@@ -143,6 +153,80 @@ def chequear_pc():
         pc_fallos += 1
         if pc_fallos >= PC_FALLOS or pc_on is None:
             pc_on = False
+
+
+# ---------- TV Samsung ----------
+TV_API = "http://%s:8001/api/v2/" % TV_IP
+
+def tv_estado():
+    # True = prendida, False = standby/apagada, None = no se sabe (no cambia nada)
+    alimentar()
+    r = None
+    try:
+        try:
+            r = requests.get(TV_API, timeout=TV_TIMEOUT)
+        except TypeError:                         # requests sin timeout
+            r = requests.get(TV_API)
+        ps = r.json().get("device", {}).get("PowerState")
+        tv["estado"] = str(ps)
+        if ps is None:
+            return None
+        return ps == "on"                         # "standby" u otro valor: no prendida
+    except OSError as e:
+        tv["estado"] = "sin respuesta"            # apagada del todo, o red caída
+        return False if wlan.isconnected() else None
+    except Exception as e:
+        tv["estado"] = repr(e)
+        return None
+    finally:
+        if r:
+            r.close()
+        gc.collect()
+
+def tv_abrir():
+    # prueba las apps en orden; True si alguna abrió
+    for app in TV_APPS:
+        alimentar()
+        r = None
+        try:
+            url = TV_API + "applications/" + app
+            try:
+                r = requests.post(url, headers={"Content-Length": "0"}, timeout=5)
+            except TypeError:
+                r = requests.post(url, headers={"Content-Length": "0"})
+            if r.text.strip() == "true":
+                tv["app"] = app
+                return True
+            errores["tv_" + app] = "respondió " + r.text.strip()[:40]
+        except Exception as e:
+            errores["tv_" + app] = repr(e)
+        finally:
+            if r:
+                r.close()
+            gc.collect()
+    return False
+
+def chequear_tv():
+    now = time.time()
+    if tv["abrir_en"] is not None:                # recién prendida: esperando para abrir
+        if now >= tv["abrir_en"]:
+            if tv_abrir() or tv["intentos"] + 1 >= TV_INTENTOS:
+                tv["abrir_en"], tv["intentos"] = None, 0
+            else:
+                tv["intentos"] += 1
+                tv["abrir_en"] = now + 3
+        return
+    on = tv_estado()
+    if on is None:
+        return
+    if on:
+        if tv["on"] is False:                     # se prendió: abrir la app en TV_DEMORA s
+            tv["abrir_en"], tv["intentos"] = now + TV_DEMORA, 0
+        tv["on"], tv["fallos"] = True, 0
+    else:
+        tv["fallos"] += 1
+        if tv["fallos"] >= TV_FALLOS or tv["on"] is None:
+            tv["on"] = False
 
 
 # ---------- Hermes ----------
@@ -508,9 +592,14 @@ def comando(cmd):
             txt += "\n\nÚltimos errores:\n" + "\n".join("%s: %s" % kv for kv in errores.items())
         return txt
     if cmd.startswith("/estado"):
-        return "PC: %s\nHermes: %s" % (
+        return "PC: %s\nHermes: %s\nTV: %s (%s)" % (
             "Prendida ✅" if pc_on else "Apagada",
-            "Online ✅" if hermes_on else "Caído ❌")
+            "Online ✅" if hermes_on else "Caído ❌",
+            "Prendida ✅" if tv["on"] else "Apagada", tv["estado"] or "sin datos")
+    if cmd.startswith("/tv"):
+        if tv_abrir():
+            return "Abierta en la TV: " + ("Launcher" if tv["app"] == TV_APPS[0] else "Flow")
+        return "No pude abrir nada en la TV (ver /log)"
     if cmd.startswith("/boca"):
         if not boca["anual"]:                     # recién arrancada: se carga ahora
             boca["ult_anual"] = time.time()
@@ -531,8 +620,11 @@ def comando(cmd):
     return None
 
 def tick():                       # main.py lo llama cada ~0,5 s
-    global t_h, t_pc, t_b, blink
+    global t_h, t_pc, t_b, t_tv, blink
     now = time.time()
+    if now - t_tv >= TV_CADA:
+        t_tv = now
+        seguro(chequear_tv)
     if now - t_h >= HERMES_CADA:
         t_h = now
         seguro(chequear_hermes)
