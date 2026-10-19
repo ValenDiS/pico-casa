@@ -10,4 +10,6 @@ Automatizaciones de casa con Raspberry Pi Pico W, controladas por Telegram.
 - `app.py`: la lógica. Es lo único que vive en este repo; se actualiza en la Pico con `/update`.
 - `main.py` y `config.py`: van solo en la Pico. `config.py` tiene las claves y nunca se sube.
 
+- `tv-flow/`: programa aparte para la Pico 2 W que abre Flow en la TV Samsung al prenderla. No lo toca `/update`.
+
 Comandos: `/pc` `/estado` `/log` `/update` `/rollback` `/reset` `/ayuda`
