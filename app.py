@@ -206,6 +206,14 @@ def tv_estado():
             r.close()
         gc.collect()
 
+tv_traza = []          # últimos pasos de la TV, se ven con /log
+
+def tv_t(txt):
+    t = time.localtime(time.time() + TZ)
+    tv_traza.append("%02d:%02d:%02d %s" % (t[3], t[4], t[5], txt))
+    if len(tv_traza) > 15:
+        tv_traza.pop(0)
+
 def tv_visible(app):
     # True si la app está en pantalla (GET /applications/<id> -> {"visible": true})
     alimentar()
@@ -215,8 +223,11 @@ def tv_visible(app):
             r = requests.get(TV_API + "applications/" + app, timeout=TV_TIMEOUT)
         except TypeError:
             r = requests.get(TV_API + "applications/" + app)
-        return bool(r.json().get("visible"))
-    except Exception:
+        j = r.json()
+        tv_t("GET %s -> %d %s" % (app[:10], r.status_code, str(j)[:60]))
+        return bool(j.get("visible"))
+    except Exception as e:
+        tv_t("GET %s -> %r" % (app[:10], e))
         return False
     finally:
         if r:
@@ -238,11 +249,13 @@ def tv_abrir():
             except TypeError:
                 r = requests.post(url, headers={"Content-Length": "0"})
             txt = r.text.strip()
+            tv_t("POST %s -> %d %s" % (app[:10], r.status_code, txt[:40]))
             ok = r.status_code == 200 and txt != "false"
             if not ok:
                 errores["tv_" + app] = "HTTP %d: %s" % (r.status_code, txt[:40])
         except Exception as e:
             errores["tv_" + app] = repr(e)
+            tv_t("POST %s -> %r" % (app[:10], e))
         finally:
             if r:
                 r.close()
@@ -262,6 +275,7 @@ def chequear_tv():
     now = time.time()
     if tv["abrir_en"] is not None:                # recién prendida: esperando para abrir
         if now >= tv["abrir_en"]:
+            tv_t("abriendo, intento %d" % (tv["intentos"] + 1))
             if tv_abrir() or tv["intentos"] + 1 >= TV_INTENTOS:
                 tv["abrir_en"], tv["intentos"] = None, 0
             else:
@@ -272,12 +286,16 @@ def chequear_tv():
     if on is None:
         return
     if on:
+        if tv["on"] is not True:
+            tv_t("prendida (%s)" % tv["estado"])
         if tv["on"] is False:                     # se prendió: abrir la app en TV_DEMORA s
             tv["abrir_en"], tv["intentos"] = now + TV_DEMORA, 0
         tv["on"], tv["fallos"] = True, 0
     else:
         tv["fallos"] += 1
         if tv["fallos"] >= TV_FALLOS or tv["on"] is None:
+            if tv["on"] is not False:
+                tv_t("apagada (%s)" % tv["estado"])
             tv["on"] = False
 
 
@@ -640,6 +658,8 @@ def comando(cmd):
         return "Magic packet enviado 🖥️"
     if cmd.startswith("/log"):
         txt = "Caídas de Hermes:\n" + ("\n".join(registro) or "Ninguna desde el último reinicio")
+        if tv_traza:
+            txt += "\n\nTV:\n" + "\n".join(tv_traza)
         if errores:
             txt += "\n\nÚltimos errores:\n" + "\n".join("%s: %s" % kv for kv in errores.items())
         return txt
