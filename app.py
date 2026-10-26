@@ -52,14 +52,17 @@ TRADUC = (("Argentine Liga Profesional de Fútbol", "Liga Profesional"),
           ("CONMEBOL ", "Copa "), ("Round of 32", "16avos de final"),
           ("Round of 16", "Octavos de final"), ("Quarterfinals", "Cuartos de final"),
           ("Semifinals", "Semifinal"), ("Group Stage", "Fase de grupos"),
-          ("Torneo ", ""), ("1st Leg", "Ida"), ("2nd Leg", "Vuelta"))
+          ("Torneo ", ""), ("1st Leg", "Ida"), ("2nd Leg", "Vuelta"),
+          ("Preliminary Round", "Fase previa"), ("Knockout Round Playoffs", "Playoffs"),
+          ("Round of 64", "32avos de final"))
 
 hermes_on = None        # desconocido hasta el primer chequeo
 pc_on     = None
 pc_fallos = 0
 boca = {"ko": None, "rival": "", "copa": "", "local": True, "ult": 0,
         "etapa": "", "estadio": "", "escudo": "", "rival_id": "", "pais": "", "ida": "", "ida_de": "", "zona": "", "record": "",
-        "anual": None, "clau": None, "record_anual": "", "ult_anual": -ANUAL_CADA, "err_anual": "cargando"}
+        "anual": None, "clau": None, "record_anual": "", "ult_anual": -ANUAL_CADA, "err_anual": "cargando",
+        "proximos": None, "ult_prox": -BOCA_CADA}
 DIAS = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
 t_h = t_pc = t_b = 0
 blink = 0
@@ -336,6 +339,52 @@ def proximo_partido():
         if ida:
             boca.update(ida=ida, ida_de=otro[0])
 
+def proximos():
+    # próximo partido de cada competencia (liga, Copa Argentina, Libertadores,
+    # Sudamericana...). Una competencia de la que Boca quedó afuera no tiene partidos
+    # programados, así que no aparece. El fixture entero pesa ~30 KB: se lee de a pedazos.
+    r = _get(ESPN % BOCA_ID)
+    lista, vistas = [], []
+    try:
+        f = _Flujo(r)
+        if not f.saltar(b'"events":['):
+            return
+        for _ev in range(15):
+            if not f.saltar(b'"date":"'):                 # fecha del partido (UTC)
+                break
+            fecha = f.hasta(b'"').decode()
+            if not (f.saltar(b'"season":{') and f.saltar(b'"displayName":"')):
+                break
+            copa = f.hasta(b'"').decode()
+            if not (f.saltar(b'"seasonType":{') and f.saltar(b'"name":"')):
+                break
+            etapa = f.hasta(b'"').decode()
+            if not f.saltar(b'"competitors":['):
+                break
+            eq = []
+            for _n in range(2):
+                v = []
+                for pat in (b'"homeAway":"', b'"team":{"id":"', b'"displayName":"'):
+                    if not f.saltar(pat):
+                        raise ValueError("fixture cortado")
+                    v.append(f.hasta(b'"').decode())
+                eq.append(v)
+            ko = a_segundos(fecha)
+            if ko + PARTIDO_MIN * 60 <= time.time():      # ya se jugó
+                continue
+            if copa[:4].isdigit():
+                copa = copa[5:]
+            copa = traducir(copa)
+            if copa in vistas:                            # solo el próximo de cada una
+                continue
+            vistas.append(copa)
+            yo, otro = (eq[0], eq[1]) if eq[0][1] == BOCA_ID else (eq[1], eq[0])
+            lista.append((ko, copa, traducir(etapa), corto(otro[2]), yo[0] == "home"))
+    finally:
+        r.close()
+        gc.collect()
+    boca["proximos"] = lista
+
 def corto(nombre):
     return "Boca" if nombre == "Boca Juniors" else nombre
 
@@ -442,8 +491,8 @@ def texto_anual():
             a + (boca["record_anual"], quedan(2 * FECHAS - a[2])))
     return "sin datos (%s)" % boca["err_anual"]
 
-def cuando():
-    t = time.localtime(boca["ko"] + TZ)
+def cuando(ko=None):
+    t = time.localtime((boca["ko"] if ko is None else ko) + TZ)
     hoy = time.localtime(time.time() + TZ)
     manana = time.localtime(time.time() + TZ + 86400)
     if t[:3] == hoy[:3]:
@@ -495,6 +544,14 @@ def detalle_boca(html=False):
     if c:
         lin.append(quedan(FECHAS - c[1]))
     partes.append("\n".join(lin))
+    otros = [p for p in (boca["proximos"] or []) if p[1] != boca["copa"]]
+    if otros:
+        lin = [t("OTRAS COMPETENCIAS")]
+        for ko, copa, etapa, rival, local in otros:
+            lin.append("%s%s\nvs %s (%s) · %s" % (
+                e(copa), " · " + e(etapa) if etapa not in ("", "Apertura", "Clausura") else "",
+                e(rival), "L" if local else "V", cuando(ko)))
+        partes.append("\n".join(lin))
     partes.append(t("TABLA ANUAL") + "\n" + texto_anual())
     return "\n\n".join(partes)
 
@@ -525,6 +582,9 @@ def tick_boca():
     if now - boca["ult"] >= espera:
         boca["ult"] = now
         proximo_partido()
+    elif now - boca["ult_prox"] >= BOCA_CADA:
+        boca["ult_prox"] = now
+        proximos()
     elif now - boca["ult_anual"] >= ANUAL_CADA:
         boca["ult_anual"] = now
         try:
@@ -559,6 +619,12 @@ def comando(cmd):
             "Prendida ✅" if pc_on else "Apagada",
             "Online ✅" if hermes_on else "Caído ❌")
     if cmd.startswith("/boca"):
+        if boca["proximos"] is None:              # recién arrancada: se carga ahora
+            boca["ult_prox"] = time.time()
+            try:
+                proximos()
+            except Exception as e:
+                errores["proximos"] = repr(e)
         if not boca["anual"]:                     # recién arrancada: se carga ahora
             boca["ult_anual"] = time.time()
             try:
