@@ -9,7 +9,7 @@ Automatizaciones de casa con Raspberry Pi Pico W, controladas por Telegram.
 ## Archivos
 - `main.py`: arranque mínimo. Se instala una sola vez a mano y no se actualiza.
   Carga `nucleo.py` y, si una versión nueva no logra hablar con Telegram en 2 arranques, vuelve sola a la anterior.
-- `nucleo.py`: WiFi, Telegram, `/update` y autorreparación (watchdog, reinicio si Telegram o el WiFi fallan, reinicio diario a las 5).
+- `nucleo.py`: WiFi, Telegram, `/update` y autorreparación (watchdog de 30 s, reinicio si Telegram o el WiFi fallan, reinicio diario a las 5).
 - `app.py`: PC, TV, Hermes, Boca.
 - `config.py`: claves. Solo en la Pico, nunca se sube.
 

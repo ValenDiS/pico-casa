@@ -245,6 +245,7 @@ def traducir(t):
     return t
 
 def _get(url):
+    alimentar()
     try:
         return requests.get(url, timeout=HERMES_TIMEOUT)
     except TypeError:

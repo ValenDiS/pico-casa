@@ -5,7 +5,7 @@
 # Comandos propios: /update  /rollback  /reset  /salud  /ayuda
 # El resto de los comandos se los pasa a app.py
 #
-# Autorreparación: se reinicia si el loop se traba más de 8 s (watchdog), si Telegram
+# Autorreparación: se reinicia si el loop se traba más de 30 s (watchdog), si Telegram
 # falla ~2 min seguidos, si el WiFi no vuelve en ~3 intentos, y una vez por día a las 5.
 # Al volver avisa el motivo.
 
@@ -22,12 +22,15 @@ TG_FALLOS_MAX = 40    # pedidos a Telegram fallidos seguidos (~2 min) antes de r
 WIFI_FALLOS_MAX = 3   # intentos de reconexión fallidos (~1,5 min) antes de reiniciarse
 WIFI_ARRANQUE_MAX = 10  # intentos de conexión al arrancar antes de reiniciarse
 HORA_REINICIO = 5     # reinicio diario preventivo (libera la memoria fragmentada)
+TRABA_MS = 30000      # sin señales de vida por este tiempo = trabado: el watchdog reinicia
 MOTIVO = "reinicio.txt"
 PRUEBA = "prueba.txt"   # existe mientras un nucleo.py nuevo no confirmó que anda
 TG = "https://api.telegram.org/bot" + C.TG_TOKEN
 wlan = network.WLAN(network.STA_IF)
 offset = 0
 wdt = None
+timer = None
+ult_vida = time.ticks_ms()
 arranque = time.time()
 tg_fallos = 0
 wifi_fallos = 0
@@ -35,8 +38,26 @@ ult_error = ""
 
 
 def alimentar():
+    # señal de vida: el watchdog de hardware corta a los 8 s, que no alcanzan para
+    # algunas conexiones lentas; un timer lo alimenta mientras haya señales de vida
+    # en los últimos 30 s, y si el programa se traba de verdad, deja de alimentarlo
+    global ult_vida
+    ult_vida = time.ticks_ms()
     if wdt:
         wdt.feed()
+
+def _perro(t):                    # corre en interrupción, cada 1 s
+    if wdt and time.ticks_diff(time.ticks_ms(), ult_vida) < TRABA_MS:
+        wdt.feed()
+
+def arrancar_perro(w):
+    global wdt, timer
+    wdt = w
+    alimentar()
+    try:
+        timer = machine.Timer(period=1000, mode=machine.Timer.PERIODIC, callback=_perro, hard=True)
+    except TypeError:             # firmware sin hard=: igual sirve como soft IRQ
+        timer = machine.Timer(period=1000, mode=machine.Timer.PERIODIC, callback=_perro)
 
 def http(metodo, url, **kw):
     alimentar()
@@ -239,7 +260,8 @@ def rollback(nombre):
 # ---------- loop ----------
 def main(wdt_arranque=None):
     global offset, wdt, tg_fallos, wifi_fallos, ult_error
-    wdt = wdt_arranque                      # el watchdog lo arranca main.py
+    if wdt_arranque:                        # el watchdog lo arranca main.py
+        arrancar_perro(wdt_arranque)
     intentos = 0
     while not wifi():
         intentos += 1
@@ -265,7 +287,7 @@ def main(wdt_arranque=None):
 
     avisar_reinicio()
     if wdt is None:                         # main.py viejo, sin watchdog propio
-        wdt = machine.WDT(timeout=8000)
+        arrancar_perro(machine.WDT(timeout=8000))
 
     app = None
     try:
