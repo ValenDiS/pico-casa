@@ -278,6 +278,10 @@ def main(wdt_arranque=None):
         except Exception:
             time.sleep(2)
 
+    # el reloj recién ahora tiene la hora real: antes de NTP arranca en 2021
+    global arranque
+    arranque = time.time()
+
     try:                                    # descarta mensajes viejos
         res = leer(-1)
         if res:
